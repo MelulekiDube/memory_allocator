@@ -12,7 +12,6 @@ pthread_mutex_t global_malloc_lock;
 #define INVALID_PTR (void*) -1
 #define lock() pthread_mutex_lock(&global_malloc_lock)
 #define unlock() pthread_mutex_unlock(&global_malloc_lock)
-#define inbetween_blocks(block, current) (block > current && block < current->next)
 #define MIN_SIZE 1024
 #define DEBUG
 
@@ -112,8 +111,10 @@ Block *get_first_fit_block(size_t size){
 			Block *next = current_block->s.next_block;
 			
 			// make next of prev point to the next of current and the prev of next of currrent point to prev of current
-			prev->s.next_block = next;
-			next->s.prev_block = prev;
+			if(prev)
+				prev->s.next_block = next;
+			if(next)
+				next->s.prev_block = prev;
 			
 			//make next of current and prev of currrent point to NULL
 			current_block->s.next_block = NULL;
@@ -161,9 +162,10 @@ void md_free(void *ptr){
 
 	block = ptr;
 	pblock = block-1;
-	prev = NULL;
-	for(current = head; current && inbetween_blocks(pblock, current); current = current->s.next_block)
-		
+	for(current = head; current && pblock > currrent; current = current->s.next_block); 
+		// once pblock is less than the current block then pblock belongs inbetween the current and the prev block
+		// if current is null then pblock should be our new tail
+	
 }
 
 // still need to do error checks for this method
