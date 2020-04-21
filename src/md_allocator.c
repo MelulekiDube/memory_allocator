@@ -49,7 +49,7 @@ void *md_malloc(size_t numbytes){
 	}	
 	
 	// add this block to the list of blocks we have
-	header = addmoreBlocks(numbytes);
+	header = addmoreBlocks(numbytes); // we may want to defragment this before returning it
 	if(!header){
 		unlock();
 		return NULL;
@@ -162,10 +162,25 @@ void md_free(void *ptr){
 
 	block = ptr;
 	pblock = block-1;
-	for(current = head; current && pblock > currrent; current = current->s.next_block); 
+	if(!head) {
+		head = pblock;
+		tail = pblock;
+		return;
+	}
+	
+	for(current = head; current && pblock > current; current = current->s.next_block); 
 		// once pblock is less than the current block then pblock belongs inbetween the current and the prev block
 		// if current is null then pblock should be our new tail
+	prev = current->s.prev_block;
+	if(prev)
+		prev->s.next_block = pblock;
+	current->s.prev_block = pblock;
 	
+	pblock->s.next_block = current;
+	pblock->s.prev_block = prev;
+	
+	if(current == head)
+		head = pblock;
 }
 
 // still need to do error checks for this method
