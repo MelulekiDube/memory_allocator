@@ -4,10 +4,15 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <pthread.h>
+
+// lock
+pthread_mutex_t global_malloc_lock;
 
 #define INVALID_PTR (void*) -1
-#define lock() 1
-#define unlock() 0
+#define lock() pthread_mutex_lock(&global_malloc_lock)
+#define unlock() pthread_mutex_unlock(&global_malloc_lock)
+#define inbetween_blocks(block, current) (block > current && block < current->next)
 #define MIN_SIZE 1024
 #define DEBUG
 
@@ -15,9 +20,8 @@ typedef long Align;
 
 typedef union block{
 	struct {
-		union block *next_block;
+		union block *next_block, *prev_block;
 		size_t size;
-		int status; // tell whether the block is empty or not 
 	} s;
 	Align x; // force alignment of blocks
 } Block;
@@ -41,21 +45,16 @@ void *md_malloc(size_t numbytes){
 	
 	// if we get a valid block we will return that block
 	if(header){
-		header->s.status = 1; // set the block to being used
 		unlock();
 		return (void*) header+1; // we return +1 because when we ask the os for block we include the size of the block. see below
 	}	
 	
 	// add this block to the list of blocks we have
 	header = addmoreBlocks(numbytes);
-	header->s.size = numbytes+BLOCKSIZE;
-	header->s.next_block = NULL;
-	header->s.status = 1;
-	if(!head)
-		head = header;
-	if(tail)
-		tail->s.next_block = header;
-	tail = header;
+	if(!header){
+		unlock();
+		return NULL;
+	}
 	
 	unlock();
 	return (void*) (header+1);
@@ -66,20 +65,37 @@ Block *addmoreBlocks(size_t size){
 	
 	size_t total_size; // this is the total_size of the block that we want. its gonna be numbytes+blocksize;
 	void *block; // this is going to be used for additional space if neededd
+	Block *header;
 	
+
 	// if we are out of blocks or we dont have blocks of this size then ask for more
 	total_size = size + BLOCKSIZE; // the block size for storing the header
-	if(total_size < MIN_SIZE)
+	if(!head && total_size < MIN_SIZE)
 		total_size = MIN_SIZE;
 	block = sbrk(total_size); //sbrk will return the old ending address of the data segment
-	if(block == INVALID_PTR) {
-		unlock();
+	if(block == INVALID_PTR)
 		return NULL;
-	}
 	#ifdef DEBUG
 	printf("Block address returned is %p\n", block);
 	#endif
-	return block;
+	
+	header = block;
+	header->s.size = size;
+	header->s.next_block = NULL;
+	header->s.prev_block = NULL;
+	
+	
+	
+	if(!head)
+		head = header;
+	if(tail){
+		tail->s.next_block = header;
+		header->s.prev_block = tail;
+	}
+	tail = header;
+	
+	
+	return header;
 }
 
 /* this will find the first block that can fit the requirements and is not being used currently from the list of blocksize*/
@@ -87,11 +103,26 @@ Block *get_first_fit_block(size_t size){
 	Block *current_block = head;
 	while(current_block){
 		// if the current bloc is not being used and the size is big enough to be used.
-		if(!current_block->s.status){
-			if (current_block->s.size == size)
-				return current_block;
+		if (current_block->s.size >= size){
+			
 			if(current_block->s.size > size)
-				return fragment_block(size);
+				current_block = fragment_block(current_block, size);
+			
+			Block *prev = current_block->s.prev_block;
+			Block *next = current_block->s.next_block;
+			
+			// make next of prev point to the next of current and the prev of next of currrent point to prev of current
+			prev->s.next_block = next;
+			next->s.prev_block = prev;
+			
+			//make next of current and prev of currrent point to NULL
+			current_block->s.next_block = NULL;
+			current_block->s.prev_block = NULL;
+			
+			if(current_block==head) head = next;
+			if(current_block==tail) tail = prev;
+			return current_block;
+		
 		}
 		current_block = current_block->s.next_block;
 	}
@@ -110,11 +141,14 @@ Block *fragment_block(Block *block, size_t size){
 		//break the block up
 		Block *nextBlock = block+size;
 		
-		//
 		nextBlock->s.size = residual_size;
+		//
+		// set the prev and next pointer as appropriate
 		nextBlock->s.next_block = block->s.next_block;
-		nextBlock>s.status = 0;
-		block->s.next = nextBlock;
+		nextBlock->s.prev_block = block;
+		block->s.next_block->s.prev_block = nextBlock;
+		
+		block->s.next_block = nextBlock;
 	}
 	return block;
 }
@@ -122,15 +156,14 @@ Block *fragment_block(Block *block, size_t size){
 void md_free(void *ptr){
 	Block *block;
 	Block *pblock;
-
+	Block *prev;
+	Block *current;
 
 	block = ptr;
 	pblock = block-1;
-	
-	pblock->s.status = 0;
-	if(!pblock->s.next_block->s.status){
-		coalesce(pblock, pblock->s.next_block); 
-	}
+	prev = NULL;
+	for(current = head; current && inbetween_blocks(pblock, current); current = current->s.next_block)
+		
 }
 
 // still need to do error checks for this method
@@ -138,7 +171,7 @@ void coalesce(Block* block1, Block* block2){
 	size_t total_size = block1->s.size + block2->s.size+BLOCKSIZE;
 	block1->s.size = total_size;
 	block1->s.next_block = block2->s.next_block;
-	block2->s.next_block = null;
+	block2->s.next_block = NULL;
 }
 
 
